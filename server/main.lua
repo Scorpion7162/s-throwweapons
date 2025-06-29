@@ -7,7 +7,7 @@ local weaponLifetime = 600000
 local playerActionCooldown = 1000
 local broadcastDistance = 50.0
 local broadcastDistanceSq = broadcastDistance * broadcastDistance
-local pickupDistanceSq = 25.0
+local pickupDistanceSq = 10.0
 local validSources = {}
 local lastPickupAttempt = {}
 local pickupCooldown = 1000
@@ -291,10 +291,12 @@ local function playerHasItem(source, itemName)
     
     local inventory = ox_inventory:GetInventoryItems(source)
     if not inventory then return false end
+    local weaponName = itemName
+    local fullWeaponName = 'WEAPON_' .. itemName
     
     for _, item in pairs(inventory) do
-        if item and item.name == itemName then
-            return true
+        if item and item.name and (item.name == weaponName or item.name == fullWeaponName) then
+            return item.name -- Return the actual item name found
         end
     end
     
@@ -307,7 +309,7 @@ lib.addCommand('throwweapon', {
     if isValidSource(source) then
         TriggerClientEvent('s-throwweapons:throwWeapon', source)
     end
-end) -- Why use a native when you have ox_lib :) 
+end) -- Ox lib is so fucking easy - Linden my beloved🥰🥰🥰🥰
 
 RegisterNetEvent('s-throwweapons:commandThrow', function()
     local source = source
@@ -325,7 +327,8 @@ RegisterNetEvent('s-throwweapons:throwWeaponServer', function(weaponName, metada
     local weaponHash = nameToHash[weaponName:lower()]
     if not weaponHash or not pistolHashMap[weaponHash] then return end
     
-    if not playerHasItem(source, weaponName) then return end
+    local actualItemName = playerHasItem(source, weaponName)
+    if not actualItemName then return end
     
     local playerCoords = getPlayerCoords(source)
     if not playerCoords or getDistanceSquared(playerCoords, position) > broadcastDistanceSq then return end
@@ -340,7 +343,7 @@ RegisterNetEvent('s-throwweapons:throwWeaponServer', function(weaponName, metada
         end
     end -- vibe coding could never do what i do
     
-    local success = ox_inventory:RemoveItem(source, weaponName, 1, nil, metadata)
+    local success = ox_inventory:RemoveItem(source, actualItemName, 1, nil, metadata)
     if not success then
         releaseLock(lockId)
         return
@@ -362,6 +365,9 @@ RegisterNetEvent('s-throwweapons:throwWeaponServer', function(weaponName, metada
     
     TriggerClientEvent('s-throwweapons:spawnWeaponObject', source, weaponId, weaponName, position, heading)
     broadcastToNearbyPlayers(position, 's-throwweapons:spawnWeaponObject', weaponId, weaponName, position, heading)
+    
+    Wait(500)
+    clearPlayerAction(source)
     
     releaseLock(lockId)
 end)
@@ -423,7 +429,12 @@ RegisterNetEvent('s-throwweapons:confirmPickup', function(weaponId)
         return
     end
     
-    local success = ox_inventory:AddItem(source, weaponData.weaponName, 1, weaponData.metadata)
+    -- Try to add with the full weapon name first
+    local fullWeaponName = 'WEAPON_' .. weaponData.weaponName
+    local success = ox_inventory:AddItem(source, fullWeaponName, 1, weaponData.metadata)
+    if not success then
+        success = ox_inventory:AddItem(source, weaponData.weaponName, 1, weaponData.metadata)
+    end
     
     if success then
         broadcastToNearbyPlayers(weaponData.position, 's-throwweapons:removeWeaponObject', weaponId)

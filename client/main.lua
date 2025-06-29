@@ -1,5 +1,5 @@
 local thrownWeapons = {}
-local playerCoords = vector3(0, 0, 0)
+local pickingUpWeapons = {}
 local animDicts = {
     ['melee@unarmed@streamed_variations'] = false,
     ['pickup_object'] = false
@@ -7,7 +7,7 @@ local animDicts = {
 local MAX_THROWN_OBJECTS = 25
 local objectCount = 0
 local lastThrowTime = 0
-local THROW_COOLDOWN = 1000 -- 1 second cooldown between throws
+local THROW_COOLDOWN = 1000
 
 local pistolHashes = { -- thank plebmasters forge for this otherwise id kms
     [453432689] = true,     
@@ -202,7 +202,6 @@ local function cleanupObject(objectId)
     if not objectId or objectId == 0 then return false end
     if not DoesEntityExist(objectId) then return false end
     
-    exports.ox_target:removeLocalEntity(objectId)
     SetEntityAsMissionEntity(objectId, true, true)
     
     local deleted = DeleteEntity(objectId)
@@ -215,10 +214,17 @@ local function cleanupObject(objectId)
 end
 
 local function cleanupAllObjects()
-    for weaponId, objectId in pairs(thrownWeapons) do
-        cleanupObject(objectId)
+    for weaponId, data in pairs(thrownWeapons) do
+        pickingUpWeapons[weaponId] = nil
+        if data.zone then
+            data.zone:remove()
+        end
+        if data.object then
+            cleanupObject(data.object)
+        end
         thrownWeapons[weaponId] = nil
     end
+    lib.hideTextUI()
     objectCount = 0
 end
 
@@ -234,17 +240,22 @@ local function removeOldestObject()
     end
     
     if oldestId then
-        cleanupObject(thrownWeapons[oldestId].object)
+        pickingUpWeapons[oldestId] = nil
+        local data = thrownWeapons[oldestId]
+        if data then
+            if data.zone then
+                data.zone:remove()
+            end
+            if data.object then
+                cleanupObject(data.object)
+            end
+        end
         thrownWeapons[oldestId] = nil
         return true
     end
     
     return false
-}
-
-lib.onCache('coords', function(coords)
-    playerCoords = coords or playerCoords
-end)
+end
 
 RegisterNetEvent('s-throwweapons:throwWeapon', function()
     if not cache.weapon then return end
@@ -252,6 +263,8 @@ RegisterNetEvent('s-throwweapons:throwWeapon', function()
     local currentTime = GetGameTimer()
     if currentTime - lastThrowTime < THROW_COOLDOWN then return end
     lastThrowTime = currentTime
+    
+    if not pistolHashes[cache.weapon] then return end
     
     local inventory = exports.ox_inventory:GetPlayerItems()
     if not inventory then return end
@@ -261,8 +274,9 @@ RegisterNetEvent('s-throwweapons:throwWeapon', function()
     
     if not baseName then return end
     
+    -- Check for both formats: "PISTOL" and "WEAPON_PISTOL"
     for _, item in pairs(inventory) do
-        if item.name == baseName then
+        if item.name == baseName or item.name == ('WEAPON_' .. baseName) then
             itemData = item
             break
         end
@@ -279,10 +293,11 @@ RegisterNetEvent('s-throwweapons:throwWeapon', function()
     local forwardVector = GetEntityForwardVector(cache.ped)
     if not forwardVector then return end
     
+    local currentCoords = GetEntityCoords(cache.ped)
     local throwPosition = vector3(
-        playerCoords.x + (forwardVector.x * 2.0),
-        playerCoords.y + (forwardVector.y * 2.0),
-        playerCoords.z
+        currentCoords.x + (forwardVector.x * 2.0),
+        currentCoords.y + (forwardVector.y * 2.0),
+        currentCoords.z
     )
     
     TriggerServerEvent('s-throwweapons:throwWeaponServer', baseName, itemData.metadata, throwPosition, GetEntityHeading(cache.ped))
@@ -302,6 +317,7 @@ lib.addKeybind({
 })
 
 RegisterNetEvent('s-throwweapons:spawnWeaponObject', function(weaponId, weaponName, position, heading)
+    if thrownWeapons[weaponId] then return end
     if not weaponId or not weaponName or not position or not heading then return end
     
     if objectCount >= MAX_THROWN_OBJECTS then
@@ -323,23 +339,36 @@ RegisterNetEvent('s-throwweapons:spawnWeaponObject', function(weaponId, weaponNa
     if weaponObj == 0 then return end
     
     objectCount = objectCount + 1
+    
+    local pickupZone = lib.zones.sphere({
+        coords = position,
+        radius = 2.0,
+        debug = false,
+        inside = function(self)
+            if pickingUpWeapons[weaponId] then return end
+            
+            lib.showTextUI('[E] - Pick Up ' .. getFormattedLabel(weaponName), {
+                position = "top-center",
+                icon = 'fas fa-hand-point-up'
+            })
+            
+            if IsControlJustPressed(0, 38) then -- E key
+                pickingUpWeapons[weaponId] = true
+                lib.hideTextUI()
+                TriggerServerEvent('s-throwweapons:pickupWeapon', weaponId)
+            end
+        end,
+        onExit = function(self)
+            lib.hideTextUI()
+        end
+    })
+    
     thrownWeapons[weaponId] = {
         object = weaponObj,
         model = modelHash,
+        zone = pickupZone,
         time = GetGameTimer()
     }
-    
-    exports.ox_target:addLocalEntity(weaponObj, {
-        {
-            name = 'pickup_weapon_' .. weaponId,
-            label = 'Pick up ' .. getFormattedLabel(weaponName),
-            icon = 'fas fa-hand-point-up',
-            distance = 2.0,
-            onSelect = function()
-                TriggerServerEvent('s-throwweapons:pickupWeapon', weaponId)
-            end
-        }
-    })
 end)
 
 RegisterNetEvent('s-throwweapons:pickupWeapon', function(weaponId)
@@ -347,6 +376,7 @@ RegisterNetEvent('s-throwweapons:pickupWeapon', function(weaponId)
     
     local objectData = thrownWeapons[weaponId]
     if not objectData or not DoesEntityExist(objectData.object) then return end
+    lib.hideTextUI()
     
     if ensureAnimLoaded('pickup_object') then
         TaskPlayAnim(cache.ped, 'pickup_object', 'pickup_low', 8.0, -8.0, -1, 0, 0, false, false, false)
@@ -360,10 +390,20 @@ end)
 RegisterNetEvent('s-throwweapons:removeWeaponObject', function(weaponId)
     if not weaponId or not thrownWeapons[weaponId] then return end
     
+    pickingUpWeapons[weaponId] = nil
+    lib.hideTextUI()
+    
     local objectData = thrownWeapons[weaponId]
     if objectData then
-        cleanupObject(objectData.object)
-        unloadModel(objectData.model)
+        if objectData.zone then
+            objectData.zone:remove()
+        end
+        if objectData.object then
+            cleanupObject(objectData.object)
+        end
+        if objectData.model then
+            unloadModel(objectData.model)
+        end
         thrownWeapons[weaponId] = nil
     end
 end)
